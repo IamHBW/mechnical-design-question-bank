@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前项目只有一个 Python 文件 `r3pxcolg.py`，其中同时包含题库数据和 Tkinter 刷题界面。题库约 512 道题，现有程序支持随机出题、答错加入错题队列、鼠标选择和键盘 `A/B/C/D` 答题、`Enter` 下一题。
+当前项目只有一个 Python 文件 `r3pxcolg.py`，其中同时包含题库数据和 Tkinter 刷题界面。题库约 512 道题，现有程序支持随机出题、答错加入错题队列、鼠标选择和键盘 `A/B/C/D` 答题、`Enter` 下一题。实施时将把这个主文件直接重命名为可读的 `mechanical_design_quiz.py`。
 
 本轮目标是在保持桌面程序形态的前提下，美化界面并增强刷题体验。改动必须外科式，避免修改与本轮需求无关的题库内容。
 
@@ -29,10 +29,9 @@
 
 采用轻拆分方案：
 
-- `mechanical_design_quiz.py`：新的主程序入口，包含 Tkinter UI、答题流程、键盘事件、设置面板逻辑。
+- `mechanical_design_quiz.py`：由原 `r3pxcolg.py` 直接重命名而来，作为新的主程序入口，包含 Tkinter UI、答题流程、键盘事件、设置面板逻辑。
 - `questions_data.py`：只保存 `questions = [...]` 题库数据。题目内容从原文件迁移，保持原样。
 - `quiz_progress.json`：运行时自动生成的进度文件，保存刷题状态。
-- `r3pxcolg.py`：保留为兼容启动器，转调 `mechanical_design_quiz.py` 的主入口，避免旧运行习惯失效。
 - `docs/superpowers/specs/2026-05-27-mechanical-design-quiz-redesign.md`：本设计文档。
 
 ## UI 布局
@@ -138,7 +137,7 @@
 
 - 题库文本迁移时保持原样，不做人工纠错。
 - 避免引入额外第三方依赖。
-- 保持旧文件 `r3pxcolg.py` 可运行。
+- 不保留旧文件名兼容入口；旧主文件直接改名为 `mechanical_design_quiz.py`。
 - UI 改动集中在新的主程序文件中。
 - 进度文件作为运行时产物，不参与题库源数据。
 
@@ -147,7 +146,7 @@
 实现后至少验证：
 
 - 程序可从 `mechanical_design_quiz.py` 启动。
-- `r3pxcolg.py` 兼容启动可用。
+- 仓库中不再保留 `r3pxcolg.py` 作为兼容启动器。
 - 顺序模式下一题按题号递增。
 - 随机模式下一题按随机队列前进。
 - 随机模式下点击左侧题号跳到原始题号。
