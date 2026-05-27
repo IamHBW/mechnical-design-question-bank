@@ -2,3 +2,4 @@ __pycache__/
 *.py[cod]
 quiz_progress.json
 summary/*.md
+docs/superpowers/specs/
