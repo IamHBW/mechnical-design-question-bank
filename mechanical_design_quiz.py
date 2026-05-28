@@ -99,17 +99,39 @@ def next_question_index(progress, total_questions, direction=1):
             current_position = random_order.index(current_index)
         except ValueError:
             current_position = 0
-        step = 1 if direction >= 0 else -1
-        statuses = progress.get("question_status", [])
-        for offset in range(1, total_questions + 1):
-            candidate_position = (current_position + step * offset) % total_questions
-            candidate_index = random_order[candidate_position]
-            if candidate_index >= len(statuses) or not statuses[candidate_index].get("checked"):
-                return candidate_index
         next_position = max(0, min(total_questions - 1, current_position + direction))
         return random_order[next_position]
 
     return max(0, min(total_questions - 1, current_index + direction))
+
+
+def rebuild_random_order_for_current_state(progress, total_questions):
+    checked_indices = []
+    unchecked_indices = []
+    statuses = progress.get("question_status", [])
+
+    for index in range(total_questions):
+        if index < len(statuses) and statuses[index].get("checked"):
+            checked_indices.append(index)
+        else:
+            unchecked_indices.append(index)
+
+    current_index = progress.get("current_index", 0)
+    if current_index in unchecked_indices:
+        remaining_unchecked = [
+            index for index in unchecked_indices if index != current_index
+        ]
+        random.shuffle(remaining_unchecked)
+        unchecked_order = [current_index] + remaining_unchecked
+    else:
+        unchecked_order = unchecked_indices[:]
+        random.shuffle(unchecked_order)
+        if unchecked_order:
+            progress["current_index"] = unchecked_order[0]
+        elif total_questions > 0 and not 0 <= current_index < total_questions:
+            progress["current_index"] = 0
+
+    progress["random_order"] = checked_indices + unchecked_order
 
 
 def record_check_result(progress, question_index, selected, correct_answer):
@@ -842,16 +864,20 @@ class QuizApp:
         mode = self.mode_var.get()
         if mode not in (MODE_SEQUENTIAL, MODE_RANDOM):
             return
+        previous_mode = self.progress["mode"]
+        random_order_invalid = sorted(self.progress["random_order"]) != list(
+            range(self.total_questions)
+        )
         self.progress["mode"] = mode
-        if sorted(self.progress["random_order"]) != list(range(self.total_questions)):
+        if mode == MODE_RANDOM:
+            if previous_mode != MODE_RANDOM or random_order_invalid:
+                rebuild_random_order_for_current_state(
+                    self.progress,
+                    self.total_questions,
+                )
+        elif random_order_invalid:
             self.progress["random_order"] = list(range(self.total_questions))
             random.shuffle(self.progress["random_order"])
-        current_status = self._current_status()
-        if mode == MODE_RANDOM and current_status["checked"]:
-            self.progress["current_index"] = next_question_index(
-                self.progress,
-                self.total_questions,
-            )
         self.save_status_var.set("有未保存更改")
         self._autosave()
         self.show_question()

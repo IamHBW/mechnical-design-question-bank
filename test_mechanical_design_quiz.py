@@ -57,7 +57,7 @@ class QuizProgressTests(unittest.TestCase):
 
         self.assertEqual(next_question_index(progress, 5), 4)
 
-    def test_random_next_question_skips_checked_questions_when_possible(self):
+    def test_random_next_question_follows_saved_order_even_when_checked(self):
         progress = create_default_progress(5, rng=random.Random(1))
         progress["mode"] = "random"
         progress["random_order"] = [0, 2, 4, 1, 3]
@@ -65,9 +65,9 @@ class QuizProgressTests(unittest.TestCase):
         progress["question_status"][2]["checked"] = True
         progress["question_status"][4]["checked"] = True
 
-        self.assertEqual(next_question_index(progress, 5), 1)
+        self.assertEqual(next_question_index(progress, 5), 2)
 
-    def test_random_previous_question_skips_checked_questions_when_possible(self):
+    def test_random_previous_question_follows_saved_order_even_when_checked(self):
         progress = create_default_progress(5, rng=random.Random(1))
         progress["mode"] = "random"
         progress["random_order"] = [0, 2, 4, 1, 3]
@@ -75,7 +75,7 @@ class QuizProgressTests(unittest.TestCase):
         progress["question_status"][1]["checked"] = True
         progress["question_status"][4]["checked"] = True
 
-        self.assertEqual(next_question_index(progress, 5, direction=-1), 2)
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 1)
 
     def test_random_navigation_allows_checked_question_when_no_unchecked_remains(self):
         progress = create_default_progress(3, rng=random.Random(1))
@@ -87,7 +87,7 @@ class QuizProgressTests(unittest.TestCase):
 
         self.assertEqual(next_question_index(progress, 3), 1)
 
-    def test_random_next_wraps_to_unchecked_question_in_saved_order(self):
+    def test_random_next_stops_at_saved_order_end(self):
         progress = create_default_progress(4, rng=random.Random(1))
         progress["mode"] = "random"
         progress["random_order"] = [0, 1, 2, 3]
@@ -96,7 +96,7 @@ class QuizProgressTests(unittest.TestCase):
         progress["question_status"][1]["checked"] = False
         progress["question_status"][2]["checked"] = True
 
-        self.assertEqual(next_question_index(progress, 4), 1)
+        self.assertEqual(next_question_index(progress, 4), 3)
 
     def test_wrong_answer_sets_auto_wrong_without_requiring_manual_mark(self):
         progress = create_default_progress(2, rng=random.Random(2))
@@ -265,7 +265,7 @@ class QuizProgressTests(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_switching_to_random_from_checked_question_moves_to_unchecked_question(self):
+    def test_random_left_arrow_returns_to_previous_checked_question_in_order(self):
         root = self.make_root()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -275,22 +275,23 @@ class QuizProgressTests(unittest.TestCase):
                         {"question": "Q1", "options": ["A. one"], "answer": "A"},
                         {"question": "Q2", "options": ["A. one"], "answer": "A"},
                         {"question": "Q3", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q4", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q5", "options": ["A. one"], "answer": "A"},
                     ],
                     progress_path=Path(temp_dir) / "quiz_progress.json",
                 )
-                app.progress["current_index"] = 0
-                app.progress["random_order"] = [0, 1, 2]
+                app.progress["mode"] = "random"
+                app.progress["random_order"] = [0, 3, 4, 1, 2]
+                app.progress["current_index"] = 3
                 app.progress["question_status"][0]["checked"] = True
-                app.progress["question_status"][1]["checked"] = True
-                app.mode_var.set("random")
 
-                app.change_mode()
+                app.handle_key_press(SimpleNamespace(keysym="Left", char=""))
 
-                self.assertEqual(app.progress["current_index"], 2)
+                self.assertEqual(app.progress["current_index"], 0)
         finally:
             root.destroy()
 
-    def test_switching_to_random_keeps_unchecked_current_question(self):
+    def test_switching_to_random_from_checked_question_moves_to_first_unchecked_question(self):
         root = self.make_root()
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -299,16 +300,51 @@ class QuizProgressTests(unittest.TestCase):
                     question_bank=[
                         {"question": "Q1", "options": ["A. one"], "answer": "A"},
                         {"question": "Q2", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q3", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q4", "options": ["A. one"], "answer": "A"},
                     ],
                     progress_path=Path(temp_dir) / "quiz_progress.json",
                 )
                 app.progress["current_index"] = 0
-                app.progress["random_order"] = [1, 0]
+                app.progress["random_order"] = [3, 1, 0, 2]
+                app.progress["question_status"][0]["checked"] = True
+                app.progress["question_status"][1]["checked"] = True
                 app.mode_var.set("random")
 
-                app.change_mode()
+                with patch("mechanical_design_quiz.random.shuffle", side_effect=lambda values: values.reverse()):
+                    app.change_mode()
 
-                self.assertEqual(app.progress["current_index"], 0)
+                self.assertEqual(app.progress["random_order"], [0, 1, 3, 2])
+                self.assertEqual(app.progress["current_index"], 3)
+        finally:
+            root.destroy()
+
+    def test_switching_to_random_keeps_unchecked_current_question_at_unchecked_front(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {"question": "Q1", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q2", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q3", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q4", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q5", "options": ["A. one"], "answer": "A"},
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                )
+                app.progress["current_index"] = 2
+                app.progress["random_order"] = [4, 3, 2, 1, 0]
+                app.progress["question_status"][0]["checked"] = True
+                app.progress["question_status"][1]["checked"] = True
+                app.mode_var.set("random")
+
+                with patch("mechanical_design_quiz.random.shuffle", side_effect=lambda values: values.reverse()):
+                    app.change_mode()
+
+                self.assertEqual(app.progress["random_order"], [0, 1, 2, 4, 3])
+                self.assertEqual(app.progress["current_index"], 2)
         finally:
             root.destroy()
 
