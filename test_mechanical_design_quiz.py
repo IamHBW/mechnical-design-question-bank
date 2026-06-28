@@ -16,7 +16,33 @@ from mechanical_design_quiz import (
     toggle_manual_mark,
     write_summary_file,
 )
+from questions_data import questions
 
+
+class QuestionDataAnswerTests(unittest.TestCase):
+    def assert_question_answer(self, snippet, expected_answer):
+        matches = [item for item in questions if snippet in item["question"]]
+        self.assertEqual(len(matches), 1, snippet)
+        self.assertEqual(matches[0]["answer"], expected_answer)
+
+    def test_reviewed_book_answer_corrections_are_applied(self):
+        expected_answers = {
+            "对于一般单向转动的转轴，其扭切应力": "B",
+            "当轴系不受轴向力作用": "C",
+            "增大相对间隙，则其最小": "B",
+            "若发现最小油膜厚度hmin": "B",
+            "滑动螺旋传动的主要失效形式": "B",
+            "棘轮机构将连续回转运动": "B",
+            "单销槽轮机构运动系数≤0.5": "A",
+            "液体动压向心滑动轴承所受载荷越小": "A",
+            "液体动压向心滑动轴承间隙越大": "B",
+            "液体动压润滑向心滑动轴承的轴颈": "A",
+            "深沟球轴承极限转速很高": "A",
+            "滚动轴承所受轴向载荷应为": "B",
+        }
+        for snippet, expected_answer in expected_answers.items():
+            with self.subTest(snippet=snippet):
+                self.assert_question_answer(snippet, expected_answer)
 
 class QuizProgressTests(unittest.TestCase):
     def make_root(self):
