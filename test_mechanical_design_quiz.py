@@ -25,6 +25,11 @@ class QuestionDataAnswerTests(unittest.TestCase):
         self.assertEqual(len(matches), 1, snippet)
         self.assertEqual(matches[0]["answer"], expected_answer)
 
+    def assert_question_explanation_contains(self, snippet, expected_text):
+        matches = [item for item in questions if snippet in item["question"]]
+        self.assertEqual(len(matches), 1, snippet)
+        self.assertIn(expected_text, matches[0]["explanation"])
+
     def test_reviewed_book_answer_corrections_are_applied(self):
         expected_answers = {
             "对于一般单向转动的转轴，其扭切应力": "B",
@@ -36,13 +41,19 @@ class QuestionDataAnswerTests(unittest.TestCase):
             "单销槽轮机构运动系数≤0.5": "A",
             "液体动压向心滑动轴承所受载荷越小": "A",
             "液体动压向心滑动轴承间隙越大": "B",
-            "液体动压润滑向心滑动轴承的轴颈": "A",
+            "液体动压润滑向心滑动轴承的轴颈": "B",
             "深沟球轴承极限转速很高": "A",
             "滚动轴承所受轴向载荷应为": "B",
         }
         for snippet, expected_answer in expected_answers.items():
             with self.subTest(snippet=snippet):
                 self.assert_question_answer(snippet, expected_answer)
+
+    def test_rolling_bearing_speed_life_explanation_keeps_life_unit_distinction(self):
+        self.assert_question_explanation_contains(
+            "转速减小到原来的1/2",
+            "若按总转数L10计则不随转速改变",
+        )
 
 class QuizProgressTests(unittest.TestCase):
     def make_root(self):
@@ -82,6 +93,60 @@ class QuizProgressTests(unittest.TestCase):
         progress["current_index"] = 1
 
         self.assertEqual(next_question_index(progress, 5), 4)
+
+    def test_all_review_scope_keeps_sequential_navigation_unchanged(self):
+        progress = create_default_progress(5, rng=random.Random(1))
+        progress["current_index"] = 2
+        progress["question_status"][1]["auto_wrong"] = True
+        progress["question_status"][4]["manual_marked"] = True
+
+        self.assertEqual(next_question_index(progress, 5), 3)
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 1)
+
+    def test_all_review_scope_keeps_random_navigation_unchanged(self):
+        progress = create_default_progress(5, rng=random.Random(1))
+        progress["mode"] = "random"
+        progress["random_order"] = [4, 1, 3, 0, 2]
+        progress["current_index"] = 1
+        progress["question_status"][0]["auto_wrong"] = True
+        progress["question_status"][4]["manual_marked"] = True
+
+        self.assertEqual(next_question_index(progress, 5), 3)
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 4)
+
+    def test_wrong_marked_scope_navigates_only_live_wrong_or_marked_questions(self):
+        progress = create_default_progress(5, rng=random.Random(1))
+        progress["review_scope"] = "wrong_marked"
+        progress["current_index"] = 1
+        progress["question_status"][1]["auto_wrong"] = True
+        progress["question_status"][3]["manual_marked"] = True
+
+        self.assertEqual(next_question_index(progress, 5), 3)
+        progress["current_index"] = 3
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 1)
+
+    def test_wrong_marked_scope_random_navigation_uses_filtered_saved_order(self):
+        progress = create_default_progress(5, rng=random.Random(1))
+        progress["mode"] = "random"
+        progress["review_scope"] = "wrong_marked"
+        progress["random_order"] = [2, 4, 0, 3, 1]
+        progress["current_index"] = 4
+        progress["question_status"][1]["auto_wrong"] = True
+        progress["question_status"][4]["manual_marked"] = True
+
+        self.assertEqual(next_question_index(progress, 5), 1)
+        progress["current_index"] = 1
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 4)
+
+    def test_last_wrong_marked_scope_navigates_saved_previous_round_indices(self):
+        progress = create_default_progress(5, rng=random.Random(1))
+        progress["review_scope"] = "last_wrong_marked"
+        progress["last_wrong_marked_indices"] = [1, 4]
+        progress["current_index"] = 1
+
+        self.assertEqual(next_question_index(progress, 5), 4)
+        progress["current_index"] = 4
+        self.assertEqual(next_question_index(progress, 5, direction=-1), 1)
 
     def test_random_next_question_follows_saved_order_even_when_checked(self):
         progress = create_default_progress(5, rng=random.Random(1))
@@ -371,6 +436,84 @@ class QuizProgressTests(unittest.TestCase):
 
                 self.assertEqual(app.progress["random_order"], [0, 1, 2, 4, 3])
                 self.assertEqual(app.progress["current_index"], 2)
+        finally:
+            root.destroy()
+
+    def test_empty_wrong_marked_scope_is_rejected(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {"question": "Q1", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q2", "options": ["A. one"], "answer": "A"},
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                )
+
+                app.review_scope_var.set("wrong_marked")
+                app.change_review_scope()
+
+                self.assertEqual(app.progress["review_scope"], "all")
+                self.assertEqual(app.review_scope_var.get(), "all")
+                self.assertIn("暂无错题或标记题", app.feedback_var.get())
+        finally:
+            root.destroy()
+
+    def test_filtered_review_scope_meta_shows_original_question_position_and_scoped_checked_count(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {"question": "Q1", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q2", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q3", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q4", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q5", "options": ["A. one"], "answer": "A"},
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                )
+                app.progress["review_scope"] = "last_wrong_marked"
+                app.progress["last_wrong_marked_indices"] = [1, 3]
+                app.progress["current_index"] = 3
+                app.progress["question_status"][0]["checked"] = True
+                app.progress["question_status"][1]["checked"] = True
+
+                app.show_question()
+
+                self.assertIn("上一轮错题/标记 | 第 4/5 题", app.meta_var.get())
+                self.assertIn("已检查 1/2", app.meta_var.get())
+        finally:
+            root.destroy()
+
+    def test_reset_keeps_previous_round_wrong_marked_indices_for_review(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {"question": "Q1", "options": ["A. one", "B. two"], "answer": "B"},
+                        {"question": "Q2", "options": ["A. one"], "answer": "A"},
+                        {"question": "Q3", "options": ["A. one"], "answer": "A"},
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                    summary_dir=Path(temp_dir) / "summary",
+                )
+                record_check_result(app.progress, 0, "A", "B")
+                app.progress["question_status"][2]["manual_marked"] = True
+
+                with patch("mechanical_design_quiz.messagebox.askyesno", return_value=True), patch(
+                    "mechanical_design_quiz.messagebox.showinfo"
+                ):
+                    app.reset_progress()
+
+                self.assertEqual(app.progress["last_wrong_marked_indices"], [0, 2])
+                self.assertFalse(app.progress["question_status"][0]["auto_wrong"])
+                self.assertFalse(app.progress["question_status"][2]["manual_marked"])
         finally:
             root.destroy()
 

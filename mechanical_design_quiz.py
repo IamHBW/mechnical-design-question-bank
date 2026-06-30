@@ -20,6 +20,9 @@ PROGRESS_VERSION = 1
 ANSWER_KEYS = ("A", "B", "C", "D")
 MODE_SEQUENTIAL = "sequential"
 MODE_RANDOM = "random"
+SCOPE_ALL = "all"
+SCOPE_WRONG_MARKED = "wrong_marked"
+SCOPE_LAST_WRONG_MARKED = "last_wrong_marked"
 
 
 def empty_question_status():
@@ -40,7 +43,9 @@ def create_default_progress(total_questions, rng=None):
         "version": PROGRESS_VERSION,
         "current_index": 0,
         "mode": MODE_SEQUENTIAL,
+        "review_scope": SCOPE_ALL,
         "random_order": random_order,
+        "last_wrong_marked_indices": [],
         "auto_save": True,
         "question_status": [empty_question_status() for _ in range(total_questions)],
     }
@@ -58,6 +63,10 @@ def normalize_progress(raw_progress, total_questions, rng=None):
     mode = raw_progress.get("mode")
     if mode in (MODE_SEQUENTIAL, MODE_RANDOM):
         progress["mode"] = mode
+
+    review_scope = raw_progress.get("review_scope")
+    if review_scope in (SCOPE_ALL, SCOPE_WRONG_MARKED, SCOPE_LAST_WRONG_MARKED):
+        progress["review_scope"] = review_scope
 
     random_order = raw_progress.get("random_order")
     if (
@@ -83,7 +92,76 @@ def normalize_progress(raw_progress, total_questions, rng=None):
             status["auto_wrong"] = bool(saved_status.get("auto_wrong", False))
             status["manual_marked"] = bool(saved_status.get("manual_marked", False))
 
+    last_indices = raw_progress.get("last_wrong_marked_indices")
+    if isinstance(last_indices, list):
+        seen = set()
+        progress["last_wrong_marked_indices"] = []
+        for index in last_indices:
+            if type(index) is not int or not 0 <= index < total_questions or index in seen:
+                continue
+            progress["last_wrong_marked_indices"].append(index)
+            seen.add(index)
+
+    if progress["review_scope"] != SCOPE_ALL:
+        active_indices = active_question_indices(progress, total_questions)
+        if not active_indices:
+            progress["review_scope"] = SCOPE_ALL
+        elif progress["current_index"] not in active_indices:
+            progress["current_index"] = active_indices[0]
+
     return progress
+
+
+def saved_random_order_is_valid(random_order, total_questions):
+    return (
+        isinstance(random_order, list)
+        and len(random_order) == total_questions
+        and sorted(random_order) == list(range(total_questions))
+    )
+
+
+def base_question_order(progress, total_questions):
+    if total_questions <= 0:
+        return []
+    if progress.get("mode") == MODE_RANDOM:
+        random_order = progress.get("random_order", [])
+        if saved_random_order_is_valid(random_order, total_questions):
+            return random_order[:]
+    return list(range(total_questions))
+
+
+def live_wrong_marked_indices(progress, total_questions):
+    statuses = progress.get("question_status", [])
+    indices = []
+    for index in range(total_questions):
+        if index >= len(statuses):
+            continue
+        status = statuses[index]
+        if status.get("auto_wrong") or status.get("manual_marked"):
+            indices.append(index)
+    return indices
+
+
+def question_in_review_scope(progress, question_index):
+    review_scope = progress.get("review_scope", SCOPE_ALL)
+    if review_scope == SCOPE_ALL:
+        return True
+    if review_scope == SCOPE_WRONG_MARKED:
+        statuses = progress.get("question_status", [])
+        if not 0 <= question_index < len(statuses):
+            return False
+        status = statuses[question_index]
+        return bool(status.get("auto_wrong") or status.get("manual_marked"))
+    if review_scope == SCOPE_LAST_WRONG_MARKED:
+        return question_index in set(progress.get("last_wrong_marked_indices", []))
+    return True
+
+
+def active_question_indices(progress, total_questions):
+    order = base_question_order(progress, total_questions)
+    if progress.get("review_scope", SCOPE_ALL) == SCOPE_ALL:
+        return order
+    return [index for index in order if question_in_review_scope(progress, index)]
 
 
 def next_question_index(progress, total_questions, direction=1):
@@ -91,18 +169,31 @@ def next_question_index(progress, total_questions, direction=1):
         return 0
 
     current_index = progress.get("current_index", 0)
-    if progress.get("mode") == MODE_RANDOM:
-        random_order = progress.get("random_order", [])
-        if sorted(random_order) != list(range(total_questions)):
-            random_order = list(range(total_questions))
-        try:
-            current_position = random_order.index(current_index)
-        except ValueError:
-            current_position = 0
-        next_position = max(0, min(total_questions - 1, current_position + direction))
-        return random_order[next_position]
+    base_order = base_question_order(progress, total_questions)
+    active_order = active_question_indices(progress, total_questions)
+    if not active_order:
+        return current_index if isinstance(current_index, int) else 0
 
-    return max(0, min(total_questions - 1, current_index + direction))
+    if current_index in active_order:
+        current_position = active_order.index(current_index)
+        next_position = max(0, min(len(active_order) - 1, current_position + direction))
+        return active_order[next_position]
+
+    active_set = set(active_order)
+    if current_index in base_order:
+        current_position = base_order.index(current_index)
+        if direction > 0:
+            for index in base_order[current_position + 1 :]:
+                if index in active_set:
+                    return index
+            return active_order[-1]
+        if direction < 0:
+            for index in reversed(base_order[:current_position]):
+                if index in active_set:
+                    return index
+            return active_order[0]
+
+    return active_order[0]
 
 
 def rebuild_random_order_for_current_state(progress, total_questions):
@@ -267,6 +358,7 @@ class QuizApp:
 
         self.selected_answer = tk.StringVar(value="")
         self.mode_var = tk.StringVar(value=MODE_SEQUENTIAL)
+        self.review_scope_var = tk.StringVar(value=SCOPE_ALL)
         self.auto_save_var = tk.BooleanVar(value=True)
         self.meta_var = tk.StringVar(value="")
         self.feedback_var = tk.StringVar(value="")
@@ -277,6 +369,7 @@ class QuizApp:
             self.total_questions,
         )
         self.mode_var.set(self.progress["mode"])
+        self.review_scope_var.set(self.progress["review_scope"])
         self.auto_save_var.set(self.progress["auto_save"])
 
         self._configure_window()
@@ -629,6 +722,30 @@ class QuizApp:
                 font=self.font_body,
             ).pack(anchor="w", pady=3)
 
+        tk.Label(
+            self.settings_panel,
+            text="刷题范围",
+            bg="#ffffff",
+            fg="#475569",
+            font=self.font_body_bold,
+        ).pack(anchor="w", pady=(18, 8))
+        for label, review_scope in (
+            ("全部题", SCOPE_ALL),
+            ("当前错题或标记题", SCOPE_WRONG_MARKED),
+            ("上一轮错题或标记题", SCOPE_LAST_WRONG_MARKED),
+        ):
+            tk.Radiobutton(
+                self.settings_panel,
+                text=label,
+                value=review_scope,
+                variable=self.review_scope_var,
+                command=self.change_review_scope,
+                bg="#ffffff",
+                fg="#111827",
+                activebackground="#ffffff",
+                font=self.font_body,
+            ).pack(anchor="w", pady=3)
+
         tk.Checkbutton(
             self.settings_panel,
             text="自动保存",
@@ -690,6 +807,7 @@ class QuizApp:
         status = self._current_status()
 
         self.mode_var.set(self.progress["mode"])
+        self.review_scope_var.set(self.progress["review_scope"])
         self.auto_save_var.set(self.progress["auto_save"])
         self.selected_answer.set(status["selected"] or "")
         self.question_label.configure(text=question.get("question", ""))
@@ -700,18 +818,34 @@ class QuizApp:
         self.root.focus_set()
 
     def _update_meta(self):
-        checked_count = sum(
-            1 for item in self.progress["question_status"] if item["checked"]
-        )
+        active_indices = active_question_indices(self.progress, self.total_questions)
+        if self.progress.get("review_scope") == SCOPE_ALL:
+            checked_total = self.total_questions
+            checked_count = sum(
+                1 for item in self.progress["question_status"] if item["checked"]
+            )
+        else:
+            checked_total = len(active_indices)
+            checked_count = sum(
+                1
+                for index in active_indices
+                if self.progress["question_status"][index]["checked"]
+            )
         wrong_count = sum(
             1
             for item in self.progress["question_status"]
             if item["auto_wrong"] or item["manual_marked"]
         )
         mode_name = "随机模式" if self.progress["mode"] == MODE_RANDOM else "顺序模式"
+        scope_names = {
+            SCOPE_ALL: "全部题",
+            SCOPE_WRONG_MARKED: "当前错题/标记",
+            SCOPE_LAST_WRONG_MARKED: "上一轮错题/标记",
+        }
+        scope_name = scope_names.get(self.progress.get("review_scope"), "全部题")
         self.meta_var.set(
-            f"{mode_name} | 第 {self.progress['current_index'] + 1}/{self.total_questions} 题 "
-            f"| 已检查 {checked_count}/{self.total_questions} | 错题/标记 {wrong_count}"
+            f"{mode_name} | {scope_name} | 第 {self.progress['current_index'] + 1}/{self.total_questions} 题 "
+            f"| 已检查 {checked_count}/{checked_total} | 错题/标记 {wrong_count}"
         )
 
     def _update_options(self, question, status):
@@ -849,6 +983,9 @@ class QuizApp:
     def go_to_question(self, question_index):
         if not 0 <= question_index < self.total_questions:
             return
+        if not question_in_review_scope(self.progress, question_index):
+            self.feedback_var.set("当前刷题范围只包含错题或标记题。")
+            return
         self.progress["current_index"] = question_index
         self.save_status_var.set("有未保存更改")
         self._autosave()
@@ -856,6 +993,28 @@ class QuizApp:
 
     def toggle_current_mark(self):
         toggle_manual_mark(self.progress, self.progress["current_index"])
+        self.save_status_var.set("有未保存更改")
+        self._autosave()
+        self.show_question()
+
+    def change_review_scope(self):
+        review_scope = self.review_scope_var.get()
+        if review_scope not in (SCOPE_ALL, SCOPE_WRONG_MARKED, SCOPE_LAST_WRONG_MARKED):
+            self.review_scope_var.set(self.progress.get("review_scope", SCOPE_ALL))
+            return
+
+        previous_scope = self.progress.get("review_scope", SCOPE_ALL)
+        self.progress["review_scope"] = review_scope
+        active_indices = active_question_indices(self.progress, self.total_questions)
+        if review_scope != SCOPE_ALL and not active_indices:
+            self.progress["review_scope"] = previous_scope
+            self.review_scope_var.set(previous_scope)
+            self.feedback_var.set("暂无错题或标记题，已保持当前刷题范围。")
+            return
+
+        if active_indices and self.progress["current_index"] not in active_indices:
+            self.progress["current_index"] = active_indices[0]
+
         self.save_status_var.set("有未保存更改")
         self._autosave()
         self.show_question()
@@ -917,6 +1076,9 @@ class QuizApp:
     def load_progress(self):
         progress, notice = load_progress_file(self.progress_path, self.total_questions)
         self.progress = progress
+        self.mode_var.set(self.progress["mode"])
+        self.review_scope_var.set(self.progress["review_scope"])
+        self.auto_save_var.set(self.progress["auto_save"])
         if notice:
             messagebox.showwarning("进度提示", notice)
         else:
@@ -939,7 +1101,13 @@ class QuizApp:
         except OSError as exc:
             messagebox.showerror("生成错题 Summary 失败", f"未重置进度：{exc}")
             return
+        last_wrong_marked_indices = live_wrong_marked_indices(
+            self.progress,
+            self.total_questions,
+        )
         self.progress = create_default_progress(self.total_questions)
+        self.progress["last_wrong_marked_indices"] = last_wrong_marked_indices
+        self.review_scope_var.set(self.progress["review_scope"])
         self.save_progress(show_dialog=False)
         self.show_question()
         messagebox.showinfo(
