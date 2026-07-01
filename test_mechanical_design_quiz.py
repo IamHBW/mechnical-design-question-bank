@@ -331,6 +331,99 @@ class QuizProgressTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_option_order_remaps_displayed_options_and_correct_answer(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {
+                            "question": "Q1",
+                            "options": ["A. make", "B. move", "C. analyze"],
+                            "answer": "B",
+                        }
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                )
+                app.progress["option_orders"] = [[2, 0, 1]]
+
+                app.show_question()
+                app.select_answer("C")
+                app.check_answer()
+
+                self.assertEqual(app.option_buttons[0].cget("text"), "A. analyze")
+                self.assertEqual(app.option_buttons[1].cget("text"), "B. make")
+                self.assertEqual(app.option_buttons[2].cget("text"), "C. move")
+                self.assertTrue(app.progress["question_status"][0]["is_correct"])
+                self.assertIn("正确答案：C", app.feedback_var.get())
+        finally:
+            root.destroy()
+
+    def test_reset_generates_shuffled_option_orders(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {
+                            "question": "Q1",
+                            "options": ["A. make", "B. move", "C. analyze"],
+                            "answer": "B",
+                        },
+                        {
+                            "question": "Q2",
+                            "options": ["A. √", "B. ×"],
+                            "answer": "A",
+                        },
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                    summary_dir=Path(temp_dir) / "summary",
+                )
+
+                with patch("mechanical_design_quiz.messagebox.askyesno", return_value=True), patch(
+                    "mechanical_design_quiz.messagebox.showinfo"
+                ), patch(
+                    "mechanical_design_quiz.random.shuffle",
+                    side_effect=lambda values: values.reverse(),
+                ):
+                    app.reset_progress()
+
+                self.assertEqual(app.progress["option_orders"], [[2, 1, 0], [0, 1]])
+                self.assertEqual(app.option_buttons[0].cget("text"), "A. analyze")
+                self.assertEqual(app.option_buttons[1].cget("text"), "B. move")
+                self.assertEqual(app.option_buttons[2].cget("text"), "C. make")
+        finally:
+            root.destroy()
+
+    def test_reset_changes_option_order_when_shuffle_leaves_identity_order(self):
+        root = self.make_root()
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                app = QuizApp(
+                    root,
+                    question_bank=[
+                        {
+                            "question": "Q1",
+                            "options": ["A. make", "B. move", "C. analyze"],
+                            "answer": "B",
+                        },
+                    ],
+                    progress_path=Path(temp_dir) / "quiz_progress.json",
+                    summary_dir=Path(temp_dir) / "summary",
+                )
+
+                with patch("mechanical_design_quiz.messagebox.askyesno", return_value=True), patch(
+                    "mechanical_design_quiz.messagebox.showinfo"
+                ), patch("mechanical_design_quiz.random.shuffle", side_effect=lambda _values: None):
+                    app.reset_progress()
+
+                self.assertEqual(app.progress["option_orders"], [[1, 2, 0]])
+                self.assertEqual(app.option_buttons[0].cget("text"), "A. move")
+        finally:
+            root.destroy()
+
     def test_random_mode_next_uses_queue_but_jump_uses_original_index(self):
         root = self.make_root()
         try:

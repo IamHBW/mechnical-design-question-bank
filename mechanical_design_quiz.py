@@ -45,6 +45,7 @@ def create_default_progress(total_questions, rng=None):
         "mode": MODE_SEQUENTIAL,
         "review_scope": SCOPE_ALL,
         "random_order": random_order,
+        "option_orders": [],
         "last_wrong_marked_indices": [],
         "auto_save": True,
         "question_status": [empty_question_status() for _ in range(total_questions)],
@@ -75,6 +76,13 @@ def normalize_progress(raw_progress, total_questions, rng=None):
         and sorted(random_order) == list(range(total_questions))
     ):
         progress["random_order"] = random_order
+
+    option_orders = raw_progress.get("option_orders")
+    if isinstance(option_orders, list) and len(option_orders) == total_questions:
+        progress["option_orders"] = [
+            order[:] if isinstance(order, list) else []
+            for order in option_orders
+        ]
 
     progress["auto_save"] = bool(raw_progress.get("auto_save", True))
 
@@ -110,6 +118,78 @@ def normalize_progress(raw_progress, total_questions, rng=None):
             progress["current_index"] = active_indices[0]
 
     return progress
+
+
+def strip_option_label(option):
+    if (
+        isinstance(option, str)
+        and len(option) >= 3
+        and option[0] in ANSWER_KEYS
+        and option[1:3] == ". "
+    ):
+        return option[3:]
+    return option
+
+
+def identity_option_order(option_count):
+    return list(range(option_count))
+
+
+def valid_option_order(option_order, option_count):
+    return (
+        isinstance(option_order, list)
+        and len(option_order) == option_count
+        and sorted(option_order) == list(range(option_count))
+    )
+
+
+def is_true_false_question(question):
+    options = question.get("options", [])
+    return [strip_option_label(option) for option in options] == ["√", "×"]
+
+
+def option_order_for_question(progress, question_index, question):
+    options = question.get("options", [])
+    option_count = len(options)
+    option_orders = progress.get("option_orders", [])
+    if question_index < len(option_orders) and valid_option_order(
+        option_orders[question_index],
+        option_count,
+    ):
+        return option_orders[question_index]
+    return identity_option_order(option_count)
+
+
+def build_option_orders(question_bank, shuffle_options=False):
+    option_orders = []
+    for question in question_bank:
+        order = identity_option_order(len(question.get("options", [])))
+        if shuffle_options and len(order) > 1 and not is_true_false_question(question):
+            random.shuffle(order)
+            if order == identity_option_order(len(order)):
+                order = order[1:] + order[:1]
+        option_orders.append(order)
+    return option_orders
+
+
+def display_options_for_question(progress, question_index, question):
+    options = question.get("options", [])
+    order = option_order_for_question(progress, question_index, question)
+    return [
+        f"{ANSWER_KEYS[position]}. {strip_option_label(options[original_index])}"
+        for position, original_index in enumerate(order)
+    ]
+
+
+def displayed_correct_answer(progress, question_index, question):
+    answer = question.get("answer")
+    if answer not in ANSWER_KEYS:
+        return answer
+    original_answer_index = ANSWER_KEYS.index(answer)
+    order = option_order_for_question(progress, question_index, question)
+    if original_answer_index not in order:
+        return answer
+    return ANSWER_KEYS[order.index(original_answer_index)]
 
 
 def saved_random_order_is_valid(random_order, total_questions):
@@ -300,13 +380,14 @@ def build_summary_markdown(question_bank, progress, generated_at=None):
         else:
             latest_result = "未检查"
 
+        correct_answer = displayed_correct_answer(progress, question_index, question)
         lines.extend(
             [
                 f"## {export_index}. 第 {question_index + 1} 题",
                 "",
                 f"来源：{'、'.join(sources)}",
                 f"用户选择：{status.get('selected') or '未选择'}",
-                f"正确答案：{question.get('answer', '')}",
+                f"正确答案：{correct_answer}",
                 f"最近结果：{latest_result}",
                 "",
                 f"题干：{question.get('question', '')}",
@@ -314,7 +395,7 @@ def build_summary_markdown(question_bank, progress, generated_at=None):
                 "选项：",
             ]
         )
-        for option in question.get("options", []):
+        for option in display_options_for_question(progress, question_index, question):
             lines.append(f"- {option}")
         lines.extend(
             [
@@ -849,8 +930,9 @@ class QuizApp:
         )
 
     def _update_options(self, question, status):
-        options = question.get("options", [])
-        correct_answer = question.get("answer")
+        current_index = self.progress["current_index"]
+        options = display_options_for_question(self.progress, current_index, question)
+        correct_answer = displayed_correct_answer(self.progress, current_index, question)
         for index, button in enumerate(self.option_buttons):
             if index >= len(options):
                 button.grid_remove()
@@ -898,7 +980,11 @@ class QuizApp:
             self._set_explanation("检查后显示解析。")
             return
 
-        correct_answer = question.get("answer", "")
+        correct_answer = displayed_correct_answer(
+            self.progress,
+            self.progress["current_index"],
+            question,
+        )
         explanation = question.get("explanation", "") or "暂无解析。"
         if status["is_correct"]:
             self.feedback_var.set(f"回答正确。正确答案：{correct_answer}")
@@ -960,7 +1046,11 @@ class QuizApp:
             self.progress,
             self.progress["current_index"],
             selected,
-            question.get("answer"),
+            displayed_correct_answer(
+                self.progress,
+                self.progress["current_index"],
+                question,
+            ),
         )
         self.save_status_var.set("有未保存更改")
         self._autosave()
@@ -1106,6 +1196,10 @@ class QuizApp:
             self.total_questions,
         )
         self.progress = create_default_progress(self.total_questions)
+        self.progress["option_orders"] = build_option_orders(
+            self.questions,
+            shuffle_options=True,
+        )
         self.progress["last_wrong_marked_indices"] = last_wrong_marked_indices
         self.review_scope_var.set(self.progress["review_scope"])
         self.save_progress(show_dialog=False)
